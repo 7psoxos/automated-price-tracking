@@ -1,0 +1,48 @@
+name: 🔥 Vapestation Price War - Daily Scraper
+
+on:
+  schedule:
+    # Run at 1 AM UTC = 3 AM UTC+2 (Greece)
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📦 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: 📚 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 🌍 Run price scraper
+        env:
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PRICE_DROP_THRESHOLD: 0.10
+        run: python check_prices.py
+      
+      - name: 📊 Commit results (if changed)
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add -A
+          git commit -m "🔄 Price data update - $(date +'%Y-%m-%d %H:%M:%S')" || true
+          git push
+        continue-on-error: true
+      
+      - name: ✅ Scrape successful
+        run: echo "🎉 Price scraping completed successfully at $(date)"
