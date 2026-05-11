@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Price Tracking System for Vapestation
-Monitors Greek vape competitor prices via web scraping
+VapeStation Price War Scraper
+Monitors Greek vape competitor prices
 """
 
 import os
-import json
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
@@ -13,88 +13,54 @@ from bs4 import BeautifulSoup
 
 load_dotenv()
 
-# Supabase config
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
-SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
-# Competitors to track (Greek vape shops)
 COMPETITORS = [
-    {
-        "id": "e-smokers",
-        "name": "E-Smokers.gr",
-        "url": "https://www.e-smokers.gr",
-        "category": "retail_competitor"
-    },
-    {
-        "id": "atmology",
-        "name": "Atmology.gr",
-        "url": "https://atmology.gr",
-        "category": "retail_competitor"
-    },
-    {
-        "id": "vapormarket",
-        "name": "VaporMarket.gr",
-        "url": "https://www.vapormarket.gr",
-        "category": "retail_competitor"
-    },
-    {
-        "id": "vapexperts",
-        "name": "VapExperts.gr",
-        "url": "https://vapexperts.gr",
-        "category": "retail_competitor"
-    },
-    {
-        "id": "atmi-zo",
-        "name": "Atmi-zo.gr",
-        "url": "https://atmi-zo.gr",
-        "category": "retail_competitor"
-    },
-    {
-        "id": "nexxton",
-        "name": "Nexxton-ecig.com",
-        "url": "https://nexxton-ecig.com",
-        "category": "retail_competitor"
-    },
-    {
-        "id": "smok-e",
-        "name": "Smok-e.gr",
-        "url": "https://smok-e.gr",
-        "category": "retail_competitor"
-    },
-    {
-        "id": "k110",
-        "name": "K110.eu",
-        "url": "https://k110.eu/",
-        "category": "retail_competitor"
-    }
+    {"id": "e-smokers", "name": "E-Smokers.gr", "url": "https://www.e-smokers.gr"},
+    {"id": "atmology", "name": "Atmology.gr", "url": "https://atmology.gr"},
+    {"id": "vapormarket", "name": "VaporMarket.gr", "url": "https://www.vapormarket.gr"},
+    {"id": "vapexperts", "name": "VapExperts.gr", "url": "https://vapexperts.gr"},
+    {"id": "atmi-zo", "name": "Atmi-zo.gr", "url": "https://atmi-zo.gr"},
+    {"id": "nexxton", "name": "Nexxton-ecig.com", "url": "https://nexxton-ecig.com"},
+    {"id": "smok-e", "name": "Smok-e.gr", "url": "https://smok-e.gr"},
+    {"id": "k110", "name": "K110.eu", "url": "https://k110.eu/"},
 ]
 
-def scrape_competitor(competitor: dict) -> str:
-    """Scrape basic content from a competitor website"""
+def scrape_competitor(competitor: dict, retries=2) -> str:
+    """Scrape content with retry logic"""
     print(f"🕷️  Scraping {competitor['name']}...")
     
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        response = requests.get(competitor['url'], headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        # Parse HTML
-        soup = BeautifulSoup(response.content, 'html.parser')
-        text = soup.get_text()[:5000]  # Limit to 5000 chars
-        
-        print(f"✅ Got content from {competitor['name']} ({len(text)} chars)")
-        return text
-        
-    except Exception as e:
-        print(f"❌ Error scraping {competitor['name']}: {str(e)}")
-        return None
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    for attempt in range(retries):
+        try:
+            response = requests.get(competitor['url'], headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            text = soup.get_text()[:5000]
+            
+            print(f"✅ Got content from {competitor['name']} ({len(text)} chars)")
+            return text
+            
+        except requests.exceptions.RequestException as e:
+            if attempt < retries - 1:
+                print(f"⚠️  Retry {attempt + 1}/{retries} for {competitor['name']}: {str(e)}")
+                time.sleep(2)
+            else:
+                print(f"❌ Error scraping {competitor['name']}: {str(e)}")
+                return None
+    
+    return None
 
-def save_to_supabase(competitor_id: str, competitor_name: str, scraped_content: str):
-    """Save scraped data to Supabase"""
+def save_to_supabase(competitor_id: str, competitor_name: str, url: str, content: str) -> bool:
+    """Save to Supabase with error handling"""
+    if not content:
+        return False
+    
     try:
         headers = {
             "apikey": SUPABASE_ANON_KEY,
@@ -105,8 +71,8 @@ def save_to_supabase(competitor_id: str, competitor_name: str, scraped_content: 
         payload = {
             "competitor_id": competitor_id,
             "name": competitor_name,
-            "url": next((c['url'] for c in COMPETITORS if c['id'] == competitor_id), ""),
-            "scraped_content": scraped_content,
+            "url": url,
+            "scraped_content": content,
             "scraped_at": datetime.utcnow().isoformat()
         }
         
@@ -117,51 +83,41 @@ def save_to_supabase(competitor_id: str, competitor_name: str, scraped_content: 
         )
         
         if response.status_code in [200, 201]:
-            print(f"💾 Saved {competitor_name} to Supabase")
+            print(f"💾 Saved {competitor_name}")
             return True
         else:
-            print(f"⚠️  Supabase save failed: {response.status_code} - {response.text}")
+            print(f"⚠️  Save failed ({response.status_code}): {response.text[:100]}")
             return False
             
     except Exception as e:
-        print(f"❌ Error saving to Supabase: {str(e)}")
+        print(f"❌ Error saving: {str(e)}")
         return False
 
 def main():
-    print("=" * 60)
+    print("=" * 70)
     print("🚀 VAPESTATION PRICE WAR SCRAPER")
-    print("=" * 60)
-    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Competitors to track: {len(COMPETITORS)}")
-    print("=" * 60)
+    print("=" * 70)
+    print(f"Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Competitors: {len(COMPETITORS)}")
+    print("=" * 70)
     
-    success_count = 0
-    fail_count = 0
+    success = 0
+    failed = 0
     
     for competitor in COMPETITORS:
-        print(f"\n📍 Processing: {competitor['name']}")
+        print(f"\n📍 {competitor['name']}")
         
-        # Scrape
         content = scrape_competitor(competitor)
         
-        if content:
-            # Save to Supabase
-            if save_to_supabase(competitor['id'], competitor['name'], content):
-                success_count += 1
-            else:
-                fail_count += 1
+        if content and save_to_supabase(competitor['id'], competitor['name'], competitor['url'], content):
+            success += 1
         else:
-            fail_count += 1
-        
-        print()
+            failed += 1
     
-    print("=" * 60)
-    print(f"✅ Scraping complete! Success: {success_count}, Failed: {fail_count}")
-    print(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
-    
-    return success_count > 0
+    print("\n" + "=" * 70)
+    print(f"✅ Complete! Success: {success}/{len(COMPETITORS)}, Failed: {failed}/{len(COMPETITORS)}")
+    print(f"End: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 70)
 
 if __name__ == "__main__":
-    success = main()
-    exit(0 if success else 1)
+    main()
