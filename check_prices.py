@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
 """
 Price Tracking System for Vapestation
-Monitors Greek vape competitor prices via Firecrawl
+Monitors Greek vape competitor prices via web scraping
 """
 
 import os
 import json
 from datetime import datetime
 from dotenv import load_dotenv
-from firecrawl import FirecrawlApp
-from pydantic import BaseModel, Field
-import psycopg2
-from psycopg2.extras import Json
 import requests
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
-# Initialize Firecrawl
-app = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
-
 # Supabase config
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SECRET_KEY")
-POSTGRES_URL = os.getenv("POSTGRES_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
 # Competitors to track (Greek vape shops)
 COMPETITORS = [
@@ -76,32 +70,25 @@ COMPETITORS = [
     }
 ]
 
-class Product(BaseModel):
-    name: str = Field(description="Product name")
-    price: float = Field(description="Product price in EUR")
-    currency: str = Field(default="EUR", description="Currency code")
-    in_stock: bool = Field(default=True, description="Is product in stock")
-
-def scrape_competitor(competitor: dict) -> list:
-    """Scrape prices from a competitor website"""
-    print(f"🕷️ Scraping {competitor['name']}...")
+def scrape_competitor(competitor: dict) -> str:
+    """Scrape basic content from a competitor website"""
+    print(f"🕷️  Scraping {competitor['name']}...")
     
     try:
-        response = app.scrape_url(
-            competitor['url'],
-            params={
-                "formats": ["markdown"],
-            }
-        )
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
         
-        if response and response.get('markdown'):
-            # Log markdown for debugging
-            print(f"✅ Got markdown from {competitor['name']} ({len(response['markdown'])} chars)")
-            return response['markdown']
-        else:
-            print(f"⚠️ No data from {competitor['name']}")
-            return None
-            
+        response = requests.get(competitor['url'], headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.content, 'html.parser')
+        text = soup.get_text()[:5000]  # Limit to 5000 chars
+        
+        print(f"✅ Got content from {competitor['name']} ({len(text)} chars)")
+        return text
+        
     except Exception as e:
         print(f"❌ Error scraping {competitor['name']}: {str(e)}")
         return None
@@ -109,10 +96,9 @@ def scrape_competitor(competitor: dict) -> list:
 def save_to_supabase(competitor_id: str, competitor_name: str, scraped_content: str):
     """Save scraped data to Supabase"""
     try:
-        # Use Supabase REST API
         headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
             "Content-Type": "application/json"
         }
         
@@ -132,11 +118,14 @@ def save_to_supabase(competitor_id: str, competitor_name: str, scraped_content: 
         
         if response.status_code in [200, 201]:
             print(f"💾 Saved {competitor_name} to Supabase")
+            return True
         else:
-            print(f"⚠️ Supabase save failed for {competitor_name}: {response.text}")
+            print(f"⚠️  Supabase save failed: {response.status_code} - {response.text}")
+            return False
             
     except Exception as e:
         print(f"❌ Error saving to Supabase: {str(e)}")
+        return False
 
 def main():
     print("=" * 60)
@@ -146,6 +135,9 @@ def main():
     print(f"Competitors to track: {len(COMPETITORS)}")
     print("=" * 60)
     
+    success_count = 0
+    fail_count = 0
+    
     for competitor in COMPETITORS:
         print(f"\n📍 Processing: {competitor['name']}")
         
@@ -154,18 +146,22 @@ def main():
         
         if content:
             # Save to Supabase
-            save_to_supabase(
-                competitor['id'],
-                competitor['name'],
-                content
-            )
+            if save_to_supabase(competitor['id'], competitor['name'], content):
+                success_count += 1
+            else:
+                fail_count += 1
+        else:
+            fail_count += 1
         
         print()
     
     print("=" * 60)
-    print("✅ Scraping complete!")
+    print(f"✅ Scraping complete! Success: {success_count}, Failed: {fail_count}")
     print(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
+    
+    return success_count > 0
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    exit(0 if success else 1)
